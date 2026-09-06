@@ -15,6 +15,9 @@ permissions:
 
 jobs:
   smoke:
+    # GitHub only exposes draft releases to identities with push access.
+    permissions:
+      contents: write
     runs-on: windows-2025
     timeout-minutes: 10
     steps:
