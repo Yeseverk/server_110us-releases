@@ -1,0 +1,55 @@
+name: Verify Windows Binary
+
+on:
+  push:
+    paths: ['.github/workflows/verify-package.yml']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Candidate release tag
+        type: string
+        default: tester-v0.2.0
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: windows-2025
+    timeout-minutes: 10
+    steps:
+      - name: Download candidate binary
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ inputs.tag || 'tester-v0.2.0' }}
+        run: |
+          if ($env:CANDIDATE_TAG -notmatch '^tester-v\d+\.\d+\.\d+$') { throw 'Invalid candidate tag' }
+          gh release download $env:CANDIDATE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*Portable.zip' --dir package
+          if ($LASTEXITCODE -ne 0) { throw 'Candidate download failed' }
+          $archive = @(Get-ChildItem package -Filter '*Portable.zip')
+          if ($archive.Count -ne 1) { throw 'Expected exactly one portable package' }
+          Expand-Archive $archive[0].FullName -DestinationPath app
+      - name: Run Windows self-test and capture native UI
+        shell: pwsh
+        run: |
+          $exe = Join-Path $PWD 'app/current/USLocalServer.Launcher.exe'
+          $evidence = Join-Path $PWD 'smoke'
+          New-Item $evidence -ItemType Directory -Force | Out-Null
+          $check = Start-Process $exe -ArgumentList '--self-test' -PassThru
+          if (-not $check.WaitForExit(60000)) { $check.Kill(); throw 'Self-test timed out' }
+          if ($check.ExitCode -ne 0) { throw 'Self-test failed' }
+          $ui = Start-Process $exe -ArgumentList @('--ui-smoke', "`"$evidence`"") -PassThru
+          if (-not $ui.WaitForExit(60000)) { $ui.Kill(); throw 'UI smoke test timed out' }
+          if ($ui.ExitCode -ne 0) { throw 'UI smoke test failed' }
+          $screenshots = @(Get-ChildItem $evidence -Filter '*.png')
+          if ($screenshots.Count -ne 2) { throw 'Expected two UI screenshots' }
+      - name: Preserve evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Windows-binary-smoke
+          path: |
+            smoke/**
+            ${{ runner.temp }}/USLocalServer.Launcher.selftest.log
+          if-no-files-found: warn
