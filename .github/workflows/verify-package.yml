@@ -1,14 +1,12 @@
 name: Verify Windows Binary
 
 on:
-  push:
-    paths: ['.github/workflows/verify-package.yml']
   workflow_dispatch:
     inputs:
       tag:
         description: Candidate release tag
         type: string
-        default: tester-v0.2.0
+        default: tester-v0.2.1
 
 permissions:
   contents: read
@@ -25,28 +23,69 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-          CANDIDATE_TAG: ${{ inputs.tag || 'tester-v0.2.0' }}
+          CANDIDATE_TAG: ${{ inputs.tag }}
         run: |
           if ($env:CANDIDATE_TAG -notmatch '^tester-v\d+\.\d+\.\d+$') { throw 'Invalid candidate tag' }
-          gh release download $env:CANDIDATE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*Portable.zip' --dir package
+          gh release download $env:CANDIDATE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*Portable.zip' --pattern '*Setup.exe' --pattern '*CoreTests.zip' --pattern 'SHA256SUMS.txt' --dir package
           if ($LASTEXITCODE -ne 0) { throw 'Candidate download failed' }
+          $checksums = @{}
+          Get-Content package/SHA256SUMS.txt | ForEach-Object {
+            if ($_ -match '^([a-fA-F0-9]{64})  (.+)$') { $checksums[$Matches[2]] = $Matches[1] }
+          }
+          Get-ChildItem package -File | Where-Object Name -ne SHA256SUMS.txt | ForEach-Object {
+            if ((Get-FileHash $_.FullName -Algorithm SHA256).Hash -ne $checksums[$_.Name]) { throw "Checksum mismatch: $($_.Name)" }
+          }
           $archive = @(Get-ChildItem package -Filter '*Portable.zip')
           if ($archive.Count -ne 1) { throw 'Expected exactly one portable package' }
           Expand-Archive $archive[0].FullName -DestinationPath app
-      - name: Run Windows self-test and capture native UI
+          $tests = @(Get-ChildItem package -Filter '*CoreTests.zip')
+          if ($tests.Count -ne 1) { throw 'Expected exactly one test binary package' }
+          Expand-Archive $tests[0].FullName -DestinationPath qa
+      - name: Install, repair, run self-tests and capture native UI
         shell: pwsh
         run: |
-          $exe = Join-Path $PWD 'app/current/USLocalServer.Launcher.exe'
+          $ErrorActionPreference = 'Stop'
+          function Invoke-CheckedProcess([string]$exe, [string[]]$arguments, [int]$timeout = 60000) {
+            $process = Start-Process $exe -ArgumentList $arguments -PassThru
+            if (-not $process.WaitForExit($timeout)) { $process.Kill($true); throw "Process timed out: $exe" }
+            if ($process.ExitCode -ne 0) { throw "Process failed ($($process.ExitCode)): $exe" }
+          }
           $evidence = Join-Path $PWD 'smoke'
           New-Item $evidence -ItemType Directory -Force | Out-Null
-          $check = Start-Process $exe -ArgumentList '--self-test' -PassThru
-          if (-not $check.WaitForExit(60000)) { $check.Kill(); throw 'Self-test timed out' }
-          if ($check.ExitCode -ne 0) { throw 'Self-test failed' }
-          $ui = Start-Process $exe -ArgumentList @('--ui-smoke', "`"$evidence`"") -PassThru
-          if (-not $ui.WaitForExit(60000)) { $ui.Kill(); throw 'UI smoke test timed out' }
-          if ($ui.ExitCode -ne 0) { throw 'UI smoke test failed' }
+          $installer = @(Get-ChildItem package -Filter '*Setup.exe')
+          if ($installer.Count -ne 1) { throw 'Expected exactly one installer' }
+          $saveRoot = Join-Path $env:LOCALAPPDATA 'USLocalServer/Tester/Server'
+          New-Item $saveRoot -ItemType Directory -Force | Out-Null
+          $sentinel = Join-Path $saveRoot 'installation-check.txt'
+          $marker = [Guid]::NewGuid().ToString()
+          Set-Content $sentinel $marker
+          Invoke-CheckedProcess $installer[0].FullName @('--silent', '--log', "`"$evidence/install.log`"") 180000
+          $exe = Join-Path $env:LOCALAPPDATA 'AnotherSys.DFO110.Tester/current/USLocalServer.Launcher.exe'
+          if (-not (Test-Path $exe)) { throw 'Installed launcher was not found' }
+          Invoke-CheckedProcess $exe @('--self-test')
+          Invoke-CheckedProcess $exe @('--ui-smoke', "`"$evidence`"")
+          Invoke-CheckedProcess $installer[0].FullName @('--silent', '--log', "`"$evidence/repair.log`"") 180000
+          Invoke-CheckedProcess $exe @('--self-test')
+          if ((Get-Content $sentinel -Raw).Trim() -ne $marker) { throw 'Installation changed the player data directory' }
+          $installedInfo = Get-Content (Join-Path (Split-Path $exe) 'build-info.json') -Raw | ConvertFrom-Json
+          $portableInfo = Get-Content app/current/build-info.json -Raw | ConvertFrom-Json
+          if ($installedInfo.commit -ne $portableInfo.commit -or $installedInfo.version -ne $portableInfo.version) { throw 'Installed and portable revisions differ' }
+          Invoke-CheckedProcess (Join-Path $PWD 'app/current/USLocalServer.Launcher.exe') @('--self-test')
+          Copy-Item (Join-Path ([IO.Path]::GetTempPath()) 'USLocalServer.Launcher.selftest.log') $evidence
+          Copy-Item (Join-Path (Split-Path $exe) 'build-info.json') $evidence
           $screenshots = @(Get-ChildItem $evidence -Filter '*.png')
-          if ($screenshots.Count -ne 2) { throw 'Expected two UI screenshots' }
+          if ($screenshots.Count -ne 6) { throw 'Expected six UI screenshots' }
+          'PASS: setup, repair, installed/portable launch, data directory retention, native UI' | Set-Content "$evidence/installation-result.txt"
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.400'
+      - name: Test installed Windows server and launcher core
+        shell: pwsh
+        run: |
+          $env:USLOCALSERVER_TEST_SERVER_EXE = Join-Path $env:LOCALAPPDATA 'AnotherSys.DFO110.Tester/current/Server/USLocalServer.Server.exe'
+          if (-not (Test-Path $env:USLOCALSERVER_TEST_SERVER_EXE)) { throw 'Installed server was not found' }
+          dotnet qa/USLocalServer.Launcher.Tests.dll --timeout 3m 2>&1 | Tee-Object -FilePath smoke/core-tests.log
+          if ($LASTEXITCODE -ne 0) { throw 'Windows core or installed-server integration tests failed' }
       - name: Preserve evidence
         if: always()
         uses: actions/upload-artifact@v4
