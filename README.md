@@ -3,7 +3,7 @@
 面向 Windows 10/11 64 位玩家的地下城与勇士 110 级版本测试登录器。
 每台电脑运行自己的本地服务，角色和存档独立保存。
 
-[下载 Windows 测试登录器](https://github.com/Yeseverk/server_110us-releases/releases)
+[下载 Windows 测试登录器 0.2.6](https://github.com/Yeseverk/server_110us-releases/releases/download/tester-v0.2.6/AnotherSys.DFO110.Tester-win-Setup.exe) · [全部版本](https://github.com/Yeseverk/server_110us-releases/releases)
 
 ![登录器首页](screenshots/launcher-home.png)
 
@@ -25,6 +25,7 @@
 
 这是测试候选版，尚未完成真实客户端、UAC、进入城镇和副本的全部验收，不是稳定版。
 Windows Server 2025 上的安装、重复安装、界面截图和核心测试结果见发布说明。
+0.2.6 已通过 [Windows 安装及升级验证](https://github.com/Yeseverk/server_110us-releases/actions/runs/34044062396) 和 [匿名公开下载升级验证](https://github.com/Yeseverk/server_110us-releases/actions/runs/34044129041)：从 0.2.5 升级、重启、测试存档与备份内容校验成功；每次 41 项核心测试全部通过。
 安装包目前未做 Windows 代码签名。此仓库只分发编译程序，不包含服务端源码。
 
 玩家只需下载 `Setup.exe`。`Windows-CoreTests.zip` 用于自动化验证，`nupkg` 和 JSON 文件用于更新系统。
