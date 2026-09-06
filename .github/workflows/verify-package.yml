@@ -80,11 +80,12 @@ jobs:
         with:
           dotnet-version: '10.0.400'
       - name: Test installed Windows server and launcher core
+        timeout-minutes: 4
         shell: pwsh
         run: |
           $env:USLOCALSERVER_TEST_SERVER_EXE = Join-Path $env:LOCALAPPDATA 'AnotherSys.DFO110.Tester/current/Server/USLocalServer.Server.exe'
           if (-not (Test-Path $env:USLOCALSERVER_TEST_SERVER_EXE)) { throw 'Installed server was not found' }
-          dotnet qa/USLocalServer.Launcher.Tests.dll --timeout 3m 2>&1 | Tee-Object -FilePath smoke/core-tests.log
+          dotnet qa/USLocalServer.Launcher.Tests.dll -noLogo -noColor -result-ctrf smoke/core-results.json 2>&1 | Tee-Object -FilePath smoke/core-tests.log
           if ($LASTEXITCODE -ne 0) { throw 'Windows core or installed-server integration tests failed' }
       - name: Preserve evidence
         if: always()
