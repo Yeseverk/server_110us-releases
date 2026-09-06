@@ -1,4 +1,5 @@
 name: Verify Windows Binary
+run-name: Verify ${{ inputs.tag }} ${{ inputs.request_id }}
 
 on:
   workflow_dispatch:
@@ -6,7 +7,21 @@ on:
       tag:
         description: Candidate release tag
         type: string
-        default: tester-v0.2.1
+        required: true
+      promote:
+        description: Publish to the tester update channel after verification
+        type: boolean
+        default: false
+      request_id:
+        description: Release command correlation id
+        type: string
+      verify_public_from:
+        description: Optional older version for a post-publication anonymous update test
+        type: string
+
+concurrency:
+  group: tester-publication
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -17,16 +32,19 @@ jobs:
     permissions:
       contents: write
     runs-on: windows-2025
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
+      - uses: actions/checkout@v4
       - name: Download candidate binary
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           CANDIDATE_TAG: ${{ inputs.tag }}
+          PUBLIC_FROM: ${{ inputs.verify_public_from }}
+          PROMOTE: ${{ inputs.promote }}
         run: |
           if ($env:CANDIDATE_TAG -notmatch '^tester-v\d+\.\d+\.\d+$') { throw 'Invalid candidate tag' }
-          gh release download $env:CANDIDATE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*Portable.zip' --pattern '*Setup.exe' --pattern '*CoreTests.zip' --pattern 'SHA256SUMS.txt' --dir package
+          gh release download $env:CANDIDATE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*Portable.zip' --pattern '*Setup.exe' --pattern '*CoreTests.zip' --pattern '*full.nupkg' --pattern 'releases.win.json' --pattern 'SHA256SUMS.txt' --dir package
           if ($LASTEXITCODE -ne 0) { throw 'Candidate download failed' }
           $checksums = @{}
           Get-Content package/SHA256SUMS.txt | ForEach-Object {
@@ -41,8 +59,28 @@ jobs:
           $tests = @(Get-ChildItem package -Filter '*CoreTests.zip')
           if ($tests.Count -ne 1) { throw 'Expected exactly one test binary package' }
           Expand-Archive $tests[0].FullName -DestinationPath qa
+          $info = Get-Content app/current/build-info.json -Raw | ConvertFrom-Json
+          $testInfo = Get-Content qa/build-info.json -Raw | ConvertFrom-Json
+          if ($env:CANDIDATE_TAG -ne "tester-v$($info.version)" -or $info.commit -notmatch '^[a-f0-9]{40}$' -or $info.commit -ne $testInfo.commit -or $info.version -ne $testInfo.version) { throw 'Candidate and test revisions differ' }
+          if ($env:PUBLIC_FROM) {
+            if ($env:PROMOTE -eq 'true' -or $env:PUBLIC_FROM -notmatch '^\d+\.\d+\.\d+$' -or [version]$env:PUBLIC_FROM -lt [version]'0.2.5' -or [version]$env:PUBLIC_FROM -ge [version]$info.version) { throw 'Invalid public upgrade test' }
+            $previous = Get-Content channels/tester.json -Raw | ConvertFrom-Json
+            if ($previous.version -ne $info.version) { throw 'Candidate is not the current public tester version' }
+            $previous.version = $env:PUBLIC_FROM
+          } elseif (Test-Path channels/tester.json) {
+            $previous = Get-Content channels/tester.json -Raw | ConvertFrom-Json
+          }
+          if ($previous -and [version]$previous.version -ge [version]'0.2.5' -and [version]$previous.version -lt [version]$info.version) {
+            gh release download "tester-v$($previous.version)" --repo $env:GITHUB_REPOSITORY --pattern '*Setup.exe' --pattern SHA256SUMS.txt --dir previous
+            if ($LASTEXITCODE -ne 0) { throw 'Previous tester package download failed' }
+            $oldSetup = Get-ChildItem previous -Filter '*Setup.exe'
+            $oldHash = (Get-FileHash $oldSetup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            if (-not ((Get-Content previous/SHA256SUMS.txt) -contains "$oldHash  $($oldSetup.Name)")) { throw 'Previous installer checksum mismatch' }
+          }
       - name: Install, repair, run self-tests and capture native UI
         shell: pwsh
+        env:
+          PUBLIC_FROM: ${{ inputs.verify_public_from }}
         run: |
           $ErrorActionPreference = 'Stop'
           function Invoke-CheckedProcess([string]$exe, [string[]]$arguments, [int]$timeout = 60000) {
@@ -59,6 +97,21 @@ jobs:
           $sentinel = Join-Path $saveRoot 'installation-check.txt'
           $marker = [Guid]::NewGuid().ToString()
           Set-Content $sentinel $marker
+          if (Test-Path previous) {
+            $oldSetup = @(Get-ChildItem previous -Filter '*Setup.exe')
+            Invoke-CheckedProcess $oldSetup[0].FullName @('--silent') 180000
+            $oldExe = Join-Path $env:LOCALAPPDATA 'AnotherSys.DFO110.Tester/current/USLocalServer.Launcher.exe'
+            $targetVersion = (Get-Content app/current/build-info.json -Raw | ConvertFrom-Json).version
+            $updateResult = Join-Path $evidence 'update-result.json'
+            $feed = if ($env:PUBLIC_FROM) { 'public' } else { "`"$PWD/package`"" }
+            Invoke-CheckedProcess $oldExe @('--update-smoke', $feed, $targetVersion, "`"$updateResult`"") 180000
+            $deadline = [DateTime]::UtcNow.AddMinutes(3)
+            while (-not (Test-Path $updateResult) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Seconds 2 }
+            if (-not (Test-Path $updateResult)) { throw 'Updater did not restart the new application' }
+            $result = Get-Content $updateResult -Raw | ConvertFrom-Json
+            if (-not $result.passed -or $result.version -ne $targetVersion) { throw 'Update or save retention failed' }
+            if ($env:PUBLIC_FROM -and -not $result.publicFeed) { throw 'Public update feed was not exercised' }
+          }
           Invoke-CheckedProcess $installer[0].FullName @('--silent', '--log', "`"$evidence/install.log`"") 180000
           $exe = Join-Path $env:LOCALAPPDATA 'AnotherSys.DFO110.Tester/current/USLocalServer.Launcher.exe'
           if (-not (Test-Path $exe)) { throw 'Installed launcher was not found' }
@@ -87,6 +140,12 @@ jobs:
           if (-not (Test-Path $env:USLOCALSERVER_TEST_SERVER_EXE)) { throw 'Installed server was not found' }
           dotnet qa/USLocalServer.Launcher.Tests.dll -noLogo -noColor -result-ctrf smoke/core-results.json 2>&1 | Tee-Object -FilePath smoke/core-tests.log
           if ($LASTEXITCODE -ne 0) { throw 'Windows core or installed-server integration tests failed' }
+      - name: Promote verified tester version
+        if: inputs.promote
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CANDIDATE_TAG: ${{ inputs.tag }}
+        run: node tools/promote-tester.mjs
       - name: Preserve evidence
         if: always()
         uses: actions/upload-artifact@v4
