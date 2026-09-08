@@ -127,7 +127,13 @@ jobs:
           Copy-Item (Join-Path ([IO.Path]::GetTempPath()) 'USLocalServer.Launcher.selftest.log') $evidence
           Copy-Item (Join-Path (Split-Path $exe) 'build-info.json') $evidence
           $screenshots = @(Get-ChildItem $evidence -Filter '*.png')
-          if ($screenshots.Count -ne 6) { throw 'Expected six UI screenshots' }
+          if (Test-Path "$evidence/ui-manifest.json") {
+            $ui = Get-Content "$evidence/ui-manifest.json" -Raw | ConvertFrom-Json
+            if ($ui.schema -ne 1 -or -not $ui.passed -or $ui.screenshots.Count -lt 6 -or $ui.screenshots.Count -ne $screenshots.Count) { throw 'Incomplete UI capture report' }
+            foreach ($name in $ui.screenshots) {
+              if ([IO.Path]::GetFileName($name) -ne $name -or -not (Test-Path -LiteralPath (Join-Path $evidence $name))) { throw 'Missing UI capture' }
+            }
+          } elseif ($screenshots.Count -ne 6) { throw 'Expected six legacy UI screenshots' }
           'PASS: setup, repair, installed/portable launch, data directory retention, native UI' | Set-Content "$evidence/installation-result.txt"
       - uses: actions/setup-dotnet@v4
         with:
