@@ -77,6 +77,30 @@ jobs:
             $oldHash = (Get-FileHash $oldSetup.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
             if (-not ((Get-Content previous/SHA256SUMS.txt) -contains "$oldHash  $($oldSetup.Name)")) { throw 'Previous installer checksum mismatch' }
           }
+      - name: Set desktop size for native UI profiles
+        shell: pwsh
+        run: |
+          Add-Type @'
+          using System.Runtime.InteropServices;
+          public static class SmokeDisplay {
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+            public static extern bool EnumDisplaySettings(string device, int mode, [In, Out] byte[] settings);
+            [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+            public static extern int ChangeDisplaySettings([In, Out] byte[] settings, int flags);
+            [DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+          }
+          '@
+          $mode = New-Object byte[] 220
+          [BitConverter]::GetBytes([int16]220).CopyTo($mode, 68)
+          if (-not [SmokeDisplay]::EnumDisplaySettings($null, -1, $mode)) { throw 'Cannot read desktop mode' }
+          [BitConverter]::GetBytes([int]0x180000).CopyTo($mode, 72)
+          [BitConverter]::GetBytes([int]1920).CopyTo($mode, 172)
+          [BitConverter]::GetBytes([int]1080).CopyTo($mode, 176)
+          $result = [SmokeDisplay]::ChangeDisplaySettings($mode, 0)
+          $width = [SmokeDisplay]::GetSystemMetrics(0)
+          $height = [SmokeDisplay]::GetSystemMetrics(1)
+          Write-Output "Desktop ${width}x${height}; change result $result"
+          if ($width -lt 1600 -or $height -lt 1000) { throw 'Desktop cannot contain all native UI profiles' }
       - name: Install, repair, run self-tests and capture native UI
         shell: pwsh
         env:
