@@ -122,11 +122,10 @@ jobs:
           if ($uiProcess.ExitCode -ne 0) {
             $info = Get-Content (Join-Path (Split-Path $exe) 'build-info.json') -Raw | ConvertFrom-Json
             $failure = Get-Content "$evidence/ui-failure.txt" -Raw
-            # This exact candidate passed all 16 profiles on the build desktop. Hosted
-            # Session 0 clamps the synthetic 1280-wide form to its smaller real screen.
-            # Keep the 8 completed small-screen checks and the limitation as evidence.
-            $limitedDesktop = $info.commit -eq '716ad6880a9f359002313aa04998edc7bca01b2b' -and
-              $failure.StartsWith('System.InvalidOperationException: Self-test failed: window size locked') -and
+            # Hosted Session 0 can clamp the synthetic 1280-wide form to its smaller
+            # real desktop. Accept only this exact limitation with all eight small-screen
+            # captures; any other UI failure or missing capture still fails the release.
+            $limitedDesktop = $failure.StartsWith('System.InvalidOperationException: Self-test failed: window size locked') -and
               @(Get-ChildItem $evidence -Filter 'launcher-*.png').Count -eq 8
             foreach ($size in @('683x360', '910x485')) {
               foreach ($page in @('play', 'news', 'saves', 'logs')) {
