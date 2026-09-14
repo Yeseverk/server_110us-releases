@@ -1,7 +1,7 @@
 {
   "schema": 1,
-  "version": "0.2.19",
-  "commit": "cd788ef37ee420ff12e8a7d63a5bac3c10abee2a",
-  "verifiedRun": "https://github.com/Yeseverk/server_110us-releases/actions/runs/34685080697",
-  "publishedUtc": "2026-09-12T09:10:19.627Z"
+  "version": "0.3.0",
+  "commit": "e7e6c63bac7aa7b1c3199044ad054caf4a2d86c4",
+  "verifiedRun": "https://github.com/Yeseverk/server_110us-releases/actions/runs/34797109737",
+  "publishedUtc": "2026-09-14T01:50:22.079Z"
 }
